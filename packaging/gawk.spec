@@ -1,83 +1,59 @@
 Name:           gawk
-Version:        3.1.5
-Release:        1
-License:        GPL-2.0+
-Summary:        The GNU version of the awk text processing utility
-Url:            http://www.gnu.org/software/gawk/gawk.html
-Group:          Applications/Text
-Source:         %{name}-%{version}.tar.bz2
-Source1001:     packaging/gawk.manifest
-Patch0:         gawk-3.1.3-getpgrp_void.patch
-Patch1:         gawk-3.1.5-free.patch
-Patch2:         gawk-3.1.5-fieldwidths.patch
-Patch3:         gawk-3.1.5-binmode.patch
-Patch4:         gawk-3.1.5-num2str.patch
-Patch5:         gawk-3.1.5-wconcat.patch
-Patch6:         gawk-3.1.5-internal.patch
-Patch7:         gawk-3.1.5-syntaxerror.patch
-Patch8:         gawk-3.1.5-numflags.patch
-Patch9:         gawk-3.1.5-ipv6.patch
-Patch10:        gawk-3.1.5-freewstr.patch
-Patch11:        gawk-3.1.5-mbread.patch
-BuildRequires:  bison
-BuildRequires:  flex
-Requires:       /usr/bin/mktemp
+Url:            http://www.gnu.org/software/gawk/
+Provides:       awk
+BuildRequires:  automake
+BuildRequires:  update-alternatives
+BuildRequires:  makeinfo
+Version:        4.0.1
+Release:        0
+Summary:        GNU awk
+License:        GPL-3.0+
+Group:          Productivity/Text/Utilities
+Source:         gawk-%{version}.tar.bz2
 
 %description
-The gawk package contains the GNU version of awk, a text processing
-utility. Awk interprets a special-purpose programming language to do
-quick and easy text pattern matching and reformatting jobs.
-
-Install the gawk package if you need a text processing utility. Gawk is
-considered to be a standard Linux tool for processing text.
+GNU awk is upwardly compatible with the System V Release 4 awk.  It is
+almost completely POSIX 1003.2 compliant.
 
 %prep
 %setup -q
-
-# gawk-3.1.3-getpgrp_void.patch
-%patch0 -p1
-# gawk-3.1.5-free.patch
 %patch1 -p1
-# gawk-3.1.5-fieldwidths.patch
-%patch2 -p1
-# gawk-3.1.5-binmode.patch
-%patch3 -p1
-# gawk-3.1.5-num2str.patch
-%patch4 -p1
-# gawk-3.1.5-wconcat.patch
-%patch5 -p1
-# gawk-3.1.5-internal.patch
-%patch6 -p1
-# gawk-3.1.5-syntaxerror.patch
-%patch7 -p1
-# gawk-3.1.5-numflags.patch
-%patch8 -p1
-# gawk-3.1.5-ipv6.patch
-%patch9 -p1
-# gawk-3.1.5-freewstr.patch
-%patch10 -p1
-# gawk-3.1.5-mbread.patch
-%patch11 -p1
+rm -f regex.[ch]
+chmod -x COPYING
+# force rebuild with non-broken makeinfo
+rm -f doc/*.info
 
 %build
-cp %{SOURCE1001} .
+AUTOPOINT=true autoreconf --force --install
+%configure --libexecdir=%{_libdir} --disable-nls
+%if %do_profiling
+  make %{?_smp_mflags} CFLAGS="$RPM_OPT_FLAGS %cflags_profile_generate"
+  make check
+  make clean
+  make %{?_smp_mflags} CFLAGS="$RPM_OPT_FLAGS %cflags_profile_feedback"
+%else
+  make %{?_smp_mflags}
+%endif
+make -C po update-po
 
-%configure --bindir=%{_bindir} --disable-nls
-
-make %{?_smp_mflags}
+%check
+make check
 
 %install
 %make_install
 
-chmod a-x COPYING
 
-%remove_docs
+%docs_package
 
-%files
-%manifest gawk.manifest
+%files 
+%defattr(-,root,root)
 %doc COPYING
-%{_bindir}/*
-%{_libexecdir}/awk
-%{_datadir}/awk
+%{_bindir}/awk
+%{_bindir}/dgawk
+%{_bindir}/gawk
+%{_bindir}/igawk
+%{_bindir}/pgawk
+%{_libdir}/awk
+/usr/share/awk
 
-
+%changelog
