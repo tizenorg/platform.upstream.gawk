@@ -17,7 +17,6 @@ almost completely POSIX 1003.2 compliant.
 
 %prep
 %setup -q
-%patch1 -p1
 rm -f regex.[ch]
 chmod -x COPYING
 # force rebuild with non-broken makeinfo
