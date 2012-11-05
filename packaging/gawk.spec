@@ -17,7 +17,7 @@ almost completely POSIX 1003.2 compliant.
 
 %prep
 %setup -q
-rm -f regex.[ch]
+#rm -f regex.[ch]
 chmod -x COPYING
 # force rebuild with non-broken makeinfo
 rm -f doc/*.info
@@ -33,7 +33,6 @@ AUTOPOINT=true autoreconf --force --install
 %else
   make %{?_smp_mflags}
 %endif
-make -C po update-po
 
 %check
 make check
