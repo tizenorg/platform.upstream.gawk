@@ -2,7 +2,6 @@ Name:           gawk
 Url:            http://www.gnu.org/software/gawk/
 Provides:       awk
 BuildRequires:  automake
-BuildRequires:  update-alternatives
 BuildRequires:  makeinfo
 Version:        4.0.1
 Release:        0
