@@ -48,9 +48,9 @@ make check
 %doc COPYING
 %{_bindir}/awk
 %{_bindir}/dgawk
-%{_bindir}/gawk
+%{_bindir}/gawk*
 %{_bindir}/igawk
-%{_bindir}/pgawk
+%{_bindir}/pgawk*
 %{_libdir}/awk
 /usr/share/awk
 
