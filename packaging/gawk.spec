@@ -10,6 +10,9 @@ License:        GPL-3.0+
 Group:          Productivity/Text/Utilities
 Source:         gawk-%{version}.tar.bz2
 
+# Temporary
+Provides:       /bin/awk
+
 %description
 GNU awk is upwardly compatible with the System V Release 4 awk.  It is
 almost completely POSIX 1003.2 compliant.
