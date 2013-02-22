@@ -12,6 +12,7 @@ Source:         gawk-%{version}.tar.bz2
 
 # Temporary
 Provides:       /bin/awk
+Provides:       /bin/gawk
 
 %description
 GNU awk is upwardly compatible with the System V Release 4 awk.  It is
@@ -47,7 +48,7 @@ make check
 
 %files 
 %defattr(-,root,root)
-%doc COPYING
+%license COPYING
 %{_bindir}/awk
 %{_bindir}/dgawk
 %{_bindir}/gawk*
