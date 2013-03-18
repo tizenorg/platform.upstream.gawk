@@ -7,7 +7,7 @@ Version:        4.0.1
 Release:        0
 Summary:        GNU awk
 License:        GPL-3.0+
-Group:          Productivity/Text/Utilities
+Group:          Base/Tools
 Source:         gawk-%{version}.tar.bz2
 
 # Temporary
@@ -20,7 +20,6 @@ almost completely POSIX 1003.2 compliant.
 
 %prep
 %setup -q
-#rm -f regex.[ch]
 chmod -x COPYING
 # force rebuild with non-broken makeinfo
 rm -f doc/*.info
