@@ -9,6 +9,7 @@ Summary:        GNU awk
 License:        GPL-3.0+
 Group:          Base/Tools
 Source:         gawk-%{version}.tar.bz2
+Source1001: 	gawk.manifest
 
 # Temporary
 Provides:       /bin/awk
@@ -20,6 +21,7 @@ almost completely POSIX 1003.2 compliant.
 
 %prep
 %setup -q
+cp %{SOURCE1001} .
 chmod -x COPYING
 # force rebuild with non-broken makeinfo
 rm -f doc/*.info
@@ -46,6 +48,7 @@ make check
 %docs_package
 
 %files 
+%manifest %{name}.manifest
 %defattr(-,root,root)
 %license COPYING
 %{_bindir}/awk
