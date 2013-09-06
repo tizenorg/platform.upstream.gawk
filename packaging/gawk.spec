@@ -7,7 +7,7 @@ Version:        4.0.1
 Release:        0
 Summary:        GNU awk
 License:        GPL-3.0+
-Group:          Base/Tools
+Group:          Base/Utilities
 Source:         gawk-%{version}.tar.bz2
 Source1001: 	gawk.manifest
 
@@ -18,6 +18,26 @@ Provides:       /bin/gawk
 %description
 GNU awk is upwardly compatible with the System V Release 4 awk.  It is
 almost completely POSIX 1003.2 compliant.
+
+%package devel
+License:        GPL-3.0+
+Summary:        Utilities for awk scripts development
+Group:          Base/Utilities
+Requires:       gawk
+
+%description devel
+Package contains tools for debugging and profiling of awk scripts
+
+%package extras
+License:        TIZEN-Public-Domain
+Summary:        Files not essential for basic AWK usage
+Group:          Base/Utilities
+Requires:       gawk
+
+%description extras
+Package contains igawk utility which allows to include source files in
+AWK programs. Several reusable AWK scripts and their dependencies are
+also included.
 
 %prep
 %setup -q
@@ -52,11 +72,16 @@ make check
 %defattr(-,root,root)
 %license COPYING
 %{_bindir}/awk
-%{_bindir}/dgawk
 %{_bindir}/gawk*
-%{_bindir}/igawk
+
+%files devel
+%defattr(-,root,root)
+%{_bindir}/dgawk
 %{_bindir}/pgawk*
+
+%files extras
+%defattr(-,root,root)
+%{_bindir}/igawk
 %{_libdir}/awk
 /usr/share/awk
 
-%changelog
