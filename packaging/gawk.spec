@@ -15,6 +15,10 @@ Source1001: 	gawk.manifest
 Provides:       /bin/awk
 Provides:       /bin/gawk
 
+%ifarch aarch64
+%define do_profiling 0
+%endif
+
 %description
 GNU awk is upwardly compatible with the System V Release 4 awk.  It is
 almost completely POSIX 1003.2 compliant.
