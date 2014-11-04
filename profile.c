@@ -3,7 +3,7 @@
  */
 
 /* 
- * Copyright (C) 1999-2011 the Free Software Foundation, Inc.
+ * Copyright (C) 1999-2013 the Free Software Foundation, Inc.
  * 
  * This file is part of GAWK, the GNU implementation of the
  * AWK Programming Language.
@@ -25,33 +25,34 @@
 
 #include "awk.h"
 
-static void pprint(INSTRUCTION *startp, INSTRUCTION *endp, int in_for_header);
+static void pprint(INSTRUCTION *startp, INSTRUCTION *endp, bool in_for_header);
 static void pp_parenthesize(NODE *n);
 static void parenthesize(int type, NODE *left, NODE *right);
 static char *pp_list(int nargs, const char *paren, const char *delim);
-static char *pp_concat(const char *s1, const char *s2, const char *s3);
-static int is_binary(int type);
+static char *pp_group3(const char *s1, const char *s2, const char *s3);
+static char *pp_concat(int nargs);
+static bool is_binary(int type);
+static bool is_scalar(int type);
 static int prec_level(int type);
 static void pp_push(int type, char *s, int flag);
 static NODE *pp_pop(void);
 static void pp_free(NODE *n);
 const char *redir2str(int redirtype);
 
-#define pp_str	hname
-#define pp_len	hlength
+#define pp_str	vname
+#define pp_len	sub.nodep.reserved
+#define pp_next	rnode
 
 #define DONT_FREE 1
 #define CAN_FREE  2
 
-#ifdef PROFILING
 static RETSIGTYPE dump_and_exit(int signum) ATTRIBUTE_NORETURN;
 static RETSIGTYPE just_dump(int signum);
-#endif
 
 /* pretty printing related functions and variables */
 
 static NODE *pp_stack = NULL;
-static char **fparms;	/* function parameter names */
+static NODE *func_params;	/* function parameters */
 static FILE *prof_fp;	/* where to send the profile */
 
 static long indent_level = 0;
@@ -59,20 +60,7 @@ static long indent_level = 0;
 
 #define SPACEOVER	0
 
-/* init_profiling --- do needed initializations, see also main.c */
-
-void
-init_profiling(int *flag ATTRIBUTE_UNUSED, const char *def_file ATTRIBUTE_UNUSED)
-{
-#ifdef PROFILING
-	if (*flag == FALSE) {
-		*flag = TRUE;
-		set_prof_file(def_file);
-	}
-#endif
-}
-
-/* set_prof_file --- set the output file for profiling */
+/* set_prof_file --- set the output file for profiling or pretty-printing */
 
 void
 set_prof_file(const char *file)
@@ -87,12 +75,11 @@ set_prof_file(const char *file)
 	}
 }
 
-/* init_profiling_signals --- set up signal handling for pgawk */
+/* init_profiling_signals --- set up signal handling for gawk --profile */
 
 void
 init_profiling_signals()
 {
-#ifdef PROFILING
 #ifdef __DJGPP__
 	signal(SIGINT, dump_and_exit);
 	signal(SIGQUIT, just_dump);
@@ -104,7 +91,6 @@ init_profiling_signals()
 	signal(SIGUSR1, just_dump);
 #endif
 #endif /* !__DJGPP__ */
-#endif /* PROFILING */
 }
 
 /* indent --- print out enough tabs */
@@ -142,6 +128,8 @@ indent_out(void)
 	assert(indent_level >= 0);
 }
 
+/* pp_push --- push a pretty printed string onto the stack */
+
 static void
 pp_push(int type, char *s, int flag)
 {
@@ -151,18 +139,22 @@ pp_push(int type, char *s, int flag)
 	n->pp_len = strlen(s);
 	n->flags = flag;
 	n->type = type;
-	n->hnext = pp_stack;
+	n->pp_next = pp_stack;
 	pp_stack = n;
 }
+
+/* pp_pop --- pop a pretty printed string off the stack */
 
 static NODE *
 pp_pop()
 {
 	NODE *n;
 	n = pp_stack;
-	pp_stack = n->hnext;
+	pp_stack = n->pp_next;
 	return n;
 }
+
+/* pp_free --- release a pretty printed node */
 
 static void
 pp_free(NODE *n)
@@ -172,12 +164,10 @@ pp_free(NODE *n)
 	freenode(n);
 }
 
-/*
- * pprint --- pretty print a program segment
- */
+/* pprint --- pretty print a program segment */
 
 static void
-pprint(INSTRUCTION *startp, INSTRUCTION *endp, int in_for_header)
+pprint(INSTRUCTION *startp, INSTRUCTION *endp, bool in_for_header)
 {
 	INSTRUCTION *pc;
 	NODE *t1;
@@ -209,15 +199,15 @@ pprint(INSTRUCTION *startp, INSTRUCTION *endp, int in_for_header)
 				ip = pc->nexti;
 				indent(ip->exec_count);
 				if (ip != (pc + 1)->firsti) {		/* non-empty pattern */
-					pprint(ip->nexti, (pc + 1)->firsti, FALSE);
+					pprint(ip->nexti, (pc + 1)->firsti, false);
 					t1 = pp_pop();
 					fprintf(prof_fp, "%s {", t1->pp_str);
 					pp_free(t1);
 					ip = (pc + 1)->firsti;
-#ifdef PROFILING
-					if (ip->exec_count > 0)
+
+					if (do_profile && ip->exec_count > 0)
 						fprintf(prof_fp, " # %ld", ip->exec_count);
-#endif
+
 					fprintf(prof_fp, "\n");
 				} else {
 					fprintf(prof_fp, "{\n");
@@ -226,7 +216,7 @@ pprint(INSTRUCTION *startp, INSTRUCTION *endp, int in_for_header)
 				ip = ip->nexti;
 			}
 			indent_in();
-			pprint(ip, (pc + 1)->lasti, FALSE);
+			pprint(ip, (pc + 1)->lasti, false);
 			indent_out();
 			fprintf(prof_fp, "\t}\n\n");
 			pc = (pc + 1)->lasti;
@@ -244,12 +234,12 @@ pprint(INSTRUCTION *startp, INSTRUCTION *endp, int in_for_header)
 			if (m == Nnull_string)	/* optional return or exit value; don't print 0 or "" */
 				pp_push(pc->opcode, m->stptr, DONT_FREE);
 			else if ((m->flags & NUMBER) != 0)
-				pp_push(pc->opcode, pp_number(m->numbr), CAN_FREE);
+				pp_push(pc->opcode, pp_number(m), CAN_FREE);
 			else {
 				str = pp_string(m->stptr, m->stlen, '"');
 				if ((m->flags & INTLSTR) != 0) {
 					char *tmp = str;
-					str = pp_concat("_", tmp, "");
+					str = pp_group3("_", tmp, "");
 					efree(tmp);
 				}
 				pp_push(pc->opcode, str, CAN_FREE);
@@ -257,6 +247,9 @@ pprint(INSTRUCTION *startp, INSTRUCTION *endp, int in_for_header)
 			break;
 
 		case Op_store_var:
+			if (pc->initval != NULL)
+				pp_push(Op_push_i, pp_node(pc->initval), CAN_FREE);
+			/* fall through */
 		case Op_store_sub:
 		case Op_assign_concat:
 		case Op_push_lhs:
@@ -267,7 +260,7 @@ pprint(INSTRUCTION *startp, INSTRUCTION *endp, int in_for_header)
 			m = pc->memory;
 			switch (m->type) {
 			case Node_param_list:
-				pp_push(pc->opcode, fparms[m->param_cnt], DONT_FREE);
+				pp_push(pc->opcode, func_params[m->param_cnt].param, DONT_FREE);
 				break;
 
 			case Node_var:
@@ -303,7 +296,7 @@ pprint(INSTRUCTION *startp, INSTRUCTION *endp, int in_for_header)
 			case Op_assign_concat:
 				t2 = pp_pop(); /* l.h.s. */
 				t1 = pp_pop();
-				tmp = pp_concat(t2->pp_str, op2str(Op_concat), t1->pp_str);
+				tmp = pp_group3(t2->pp_str, op2str(Op_concat), t1->pp_str);
 				fprintf(prof_fp, "%s%s%s", t2->pp_str, op2str(Op_assign), tmp);
 				efree(tmp);
 cleanup:
@@ -323,7 +316,7 @@ cleanup:
 		case Op_subscript:
 			tmp = pp_list(pc->sub_count, op2str(pc->opcode), ", ");
 			t1 = pp_pop();
-			str = pp_concat(t1->pp_str, tmp, "");
+			str = pp_group3(t1->pp_str, tmp, "");
 			efree(tmp);
 			pp_free(t1);
 			pp_push(pc->opcode, str, CAN_FREE);
@@ -335,7 +328,7 @@ cleanup:
 			t2 = pp_pop();
 			t1 = pp_pop();
 			parenthesize(pc->opcode, t1, t2);
-			str = pp_concat(t1->pp_str, op2str(pc->opcode), t2->pp_str);
+			str = pp_group3(t1->pp_str, op2str(pc->opcode), t2->pp_str);
 			pp_free(t1);
 			pp_free(t2);
 			pp_push(pc->opcode, str, CAN_FREE);
@@ -354,10 +347,10 @@ cleanup:
 					&& is_binary(t1->type))  /* (a - b) * 1 */
 				pp_parenthesize(t1);
 			if ((m->flags & NUMBER) != 0)
-				tmp = pp_number(m->numbr);
+				tmp = pp_number(m);
 			else
 				tmp = pp_string(m->stptr, m->stlen, '"');
-			str = pp_concat(t1->pp_str, op2str(pc->opcode), tmp);
+			str = pp_group3(t1->pp_str, op2str(pc->opcode), tmp);
 			efree(tmp);
 			pp_free(t1);
 			pp_push(pc->opcode, str, CAN_FREE);
@@ -378,7 +371,7 @@ cleanup:
 			t2 = pp_pop();
 			t1 = pp_pop();
 			parenthesize(pc->opcode, t1, t2);
-			str = pp_concat(t1->pp_str, op2str(pc->opcode), t2->pp_str);
+			str = pp_group3(t1->pp_str, op2str(pc->opcode), t2->pp_str);
 			pp_free(t1);
 			pp_free(t2);
 			pp_push(pc->opcode, str, CAN_FREE);
@@ -390,9 +383,9 @@ cleanup:
 		case Op_postdecrement:
 			t1 = pp_pop();
 			if (pc->opcode == Op_preincrement || pc->opcode == Op_predecrement)
-				str = pp_concat(op2str(pc->opcode), t1->pp_str, "");
+				str = pp_group3(op2str(pc->opcode), t1->pp_str, "");
 			else
-				str = pp_concat(t1->pp_str, op2str(pc->opcode), "");
+				str = pp_group3(t1->pp_str, op2str(pc->opcode), "");
 			pp_free(t1);
 			pp_push(pc->opcode, str, CAN_FREE);
 			break;
@@ -406,7 +399,7 @@ cleanup:
 				pp_parenthesize(t1);
 
 			/* optypes table (eval.c) includes space after ! */
-			str = pp_concat(op2str(pc->opcode), t1->pp_str, "");
+			str = pp_group3(op2str(pc->opcode), t1->pp_str, "");
 			pp_free(t1);
 			pp_push(pc->opcode, str, CAN_FREE);
 			break;
@@ -420,7 +413,7 @@ cleanup:
 		case Op_assign_exp:
 			t2 = pp_pop(); /* l.h.s. */
 			t1 = pp_pop();
-			str = pp_concat(t2->pp_str, op2str(pc->opcode), t1->pp_str);
+			str = pp_group3(t2->pp_str, op2str(pc->opcode), t1->pp_str);
 			pp_free(t2);
 			pp_free(t1);
 			pp_push(pc->opcode, str, CAN_FREE);
@@ -439,8 +432,7 @@ cleanup:
 			break; 
 
 		case Op_concat:
- 			str = pp_list(pc->expr_count, NULL,
-							(pc->concat_flag & CSUBSEP) ? ", " : op2str(Op_concat));
+			str = pp_concat(pc->expr_count);
 			pp_push(Op_concat, str, CAN_FREE);
 			break;
 
@@ -451,7 +443,7 @@ cleanup:
 			array = t1->pp_str;
 			if (pc->expr_count > 0) {
 				char *sub;
-				sub = pp_list(pc->expr_count, NULL, ", ");
+				sub = pp_list(pc->expr_count, NULL, pc->expr_count > 1 ? "][" : ", ");
 				fprintf(prof_fp, "%s %s[%s]", op2str(Op_K_delete), array, sub);
 				efree(sub);
 			} else 				
@@ -474,12 +466,15 @@ cleanup:
 			array = t1->pp_str;
 			if (pc->expr_count > 1) {
 				sub = pp_list(pc->expr_count, "()", ", ");
-				str = pp_concat(sub, op2str(Op_in_array), array);
+				str = pp_group3(sub, op2str(Op_in_array), array);
 				efree(sub);
 			} else {
 				t2 = pp_pop();
+				if (prec_level(t2->type) < prec_level(Op_in_array)) {
+						pp_parenthesize(t2);
+				}
 				sub = t2->pp_str;
-				str = pp_concat(sub, op2str(Op_in_array), array);
+				str = pp_group3(sub, op2str(Op_in_array), array);
 				pp_free(t2);
 			}
 			pp_free(t1);
@@ -490,6 +485,7 @@ cleanup:
 		case Op_var_update:
 		case Op_var_assign:
 		case Op_field_assign:
+		case Op_subscript_assign:
 		case Op_arrayfor_init:
 		case Op_arrayfor_incr: 
 		case Op_arrayfor_final:
@@ -510,39 +506,43 @@ cleanup:
 		case Op_sub_builtin:
 		{
 			const char *fname = "sub";
-			if (pc->sub_flags & GSUB)
+			if ((pc->sub_flags & GSUB) != 0)
 				fname = "gsub";
-			else if (pc->sub_flags & GENSUB)
+			else if ((pc->sub_flags & GENSUB) != 0)
 				fname = "gensub";
 			tmp = pp_list(pc->expr_count, "()", ", ");
-			str = pp_concat(fname, tmp, "");
+			str = pp_group3(fname, tmp, "");
 			efree(tmp);
 			pp_push(Op_sub_builtin, str, CAN_FREE);
 		}
 			break;
 
 		case Op_builtin:
+		case Op_ext_builtin:
 		{
-			static char *ext_func = "extension_function()";
-			const char *fname = getfname(pc->builtin);
+			const char *fname;
+			if (pc->opcode == Op_builtin)
+				fname = getfname(pc->builtin);
+			else
+				fname = (pc + 1)->func_name;
 			if (fname != NULL) {
 				if (pc->expr_count > 0) {
 					tmp = pp_list(pc->expr_count, "()", ", ");
-					str = pp_concat(fname, tmp, "");
+					str = pp_group3(fname, tmp, "");
 					efree(tmp);
 				} else
-					str = pp_concat(fname, "()", "");
+					str = pp_group3(fname, "()", "");
 				pp_push(Op_builtin, str, CAN_FREE);
 			} else
-				pp_push(Op_builtin, ext_func, DONT_FREE);
+				fatal(_("internal error: builtin with null fname"));
 		}
 			break;
-	
+
 		case Op_K_print:
 		case Op_K_printf:
 		case Op_K_print_rec:
 			if (pc->opcode == Op_K_print_rec)
-				tmp = pp_concat(" ", op2str(Op_field_spec), "0");
+				tmp = pp_group3(" ", op2str(Op_field_spec), "0");
 			else if (pc->redir_type != 0)
 				tmp = pp_list(pc->expr_count, "()", ", ");
 			else {
@@ -592,12 +592,12 @@ cleanup:
 				if (is_binary(t2->type))
 					pp_parenthesize(t2);
 				txt = t2->pp_str;
-				str = pp_concat(txt, op2str(pc->opcode), restr);
+				str = pp_group3(txt, op2str(pc->opcode), restr);
 				pp_free(t2);
 			} else {
 				NODE *re = m->re_exp;
 				restr = pp_string(re->stptr, re->stlen, '/');
-				str = pp_concat(txt, op2str(pc->opcode), restr);
+				str = pp_group3(txt, op2str(pc->opcode), restr);
 				efree(restr);
 			}
 			pp_free(t1);
@@ -609,10 +609,10 @@ cleanup:
 		case Op_K_getline_redir:
 			if (pc->into_var) {
 				t1 = pp_pop();
-				tmp = pp_concat(op2str(Op_K_getline), " ", t1->pp_str);
+				tmp = pp_group3(op2str(Op_K_getline), " ", t1->pp_str);
 				pp_free(t1);
 			} else
-				tmp = pp_concat(op2str(Op_K_getline), "", "");
+				tmp = pp_group3(op2str(Op_K_getline), "", "");
 
 			if (pc->redir_type != 0) {
 				int before = (pc->redir_type == redirect_pipein
@@ -622,9 +622,9 @@ cleanup:
 				if (is_binary(t2->type))
 					pp_parenthesize(t2);
 				if (before)
-					str = pp_concat(t2->pp_str, redir2str(pc->redir_type), tmp);
+					str = pp_group3(t2->pp_str, redir2str(pc->redir_type), tmp);
 				else
-					str = pp_concat(tmp, redir2str(pc->redir_type), t2->pp_str);
+					str = pp_group3(tmp, redir2str(pc->redir_type), t2->pp_str);
 				efree(tmp);
 				pp_free(t2);
 			} else
@@ -646,10 +646,10 @@ cleanup:
 			pcount = (pc + 1)->expr_count;
 			if (pcount > 0) {
 				tmp = pp_list(pcount, "()", ", ");
-				str = pp_concat(pre, fname, tmp);
+				str = pp_group3(pre, fname, tmp);
 				efree(tmp);
 			} else
-				str = pp_concat(pre, fname, "()");
+				str = pp_group3(pre, fname, "()");
 			if (pc->opcode == Op_indirect_func_call) {
 				t1 = pp_pop();	/* indirect var */
 				pp_free(t1);
@@ -685,11 +685,11 @@ cleanup:
 
 		case Op_line_range:
 			ip = pc + 1;
-			pprint(pc->nexti, ip->condpair_left, FALSE);
-			pprint(ip->condpair_left->nexti, ip->condpair_right, FALSE);
+			pprint(pc->nexti, ip->condpair_left, false);
+			pprint(ip->condpair_left->nexti, ip->condpair_right, false);
 			t2 = pp_pop();
 			t1 = pp_pop();
-			str = pp_concat(t1->pp_str, ", ", t2->pp_str);
+			str = pp_group3(t1->pp_str, ", ", t2->pp_str);
 			pp_free(t1);
 			pp_free(t2);
 			pp_push(Op_line_range, str, CAN_FREE);
@@ -700,12 +700,12 @@ cleanup:
 			ip = pc + 1;
 			indent(ip->while_body->exec_count);
 			fprintf(prof_fp, "%s (", op2str(pc->opcode));
-			pprint(pc->nexti, ip->while_body, FALSE);
+			pprint(pc->nexti, ip->while_body, false);
 			t1 = pp_pop();
 			fprintf(prof_fp, "%s) {\n", t1->pp_str);
 			pp_free(t1);
 			indent_in();
-			pprint(ip->while_body->nexti, pc->target_break, FALSE);
+			pprint(ip->while_body->nexti, pc->target_break, false);
 			indent_out();
 			indent(SPACEOVER);
 			fprintf(prof_fp, "}\n");
@@ -717,9 +717,9 @@ cleanup:
 			indent(pc->nexti->exec_count);
 			fprintf(prof_fp, "%s {\n", op2str(pc->opcode));
 			indent_in();
-			pprint(pc->nexti->nexti, ip->doloop_cond, FALSE);
+			pprint(pc->nexti->nexti, ip->doloop_cond, false);
 			indent_out();
-			pprint(ip->doloop_cond, pc->target_break, FALSE);
+			pprint(ip->doloop_cond, pc->target_break, false);
 			indent(SPACEOVER);
 			t1 = pp_pop();
 			fprintf(prof_fp, "} %s (%s)\n", op2str(Op_K_while), t1->pp_str);
@@ -731,23 +731,23 @@ cleanup:
 			ip = pc + 1;
 			indent(ip->forloop_body->exec_count);
 			fprintf(prof_fp, "%s (", op2str(pc->opcode));	
-			pprint(pc->nexti, ip->forloop_cond, TRUE);
+			pprint(pc->nexti, ip->forloop_cond, true);
 			fprintf(prof_fp, "; ");
 
 			if (ip->forloop_cond->opcode == Op_no_op &&
 					ip->forloop_cond->nexti == ip->forloop_body)
 				fprintf(prof_fp, "; ");
 			else {
-				pprint(ip->forloop_cond, ip->forloop_body, TRUE);
+				pprint(ip->forloop_cond, ip->forloop_body, true);
 				t1 = pp_pop();
 				fprintf(prof_fp, "%s; ", t1->pp_str);
 				pp_free(t1);
 			}
 
-			pprint(pc->target_continue, pc->target_break, TRUE);
+			pprint(pc->target_continue, pc->target_break, true);
 			fprintf(prof_fp, ") {\n");
 			indent_in();
-			pprint(ip->forloop_body->nexti, pc->target_continue, FALSE);
+			pprint(ip->forloop_body->nexti, pc->target_continue, false);
 			indent_out();
 			indent(SPACEOVER);
 			fprintf(prof_fp, "}\n");
@@ -756,14 +756,15 @@ cleanup:
 
 		case Op_K_arrayfor:
 		{
-			char *array, *item;
+			char *array;
+			const char *item;
 
 			ip = pc + 1;
 			t1 = pp_pop();
 			array = t1->pp_str;
 			m = ip->forloop_cond->array_var;
 			if (m->type == Node_param_list)
-				item = fparms[m->param_cnt];
+				item = func_params[m->param_cnt].param;
 			else
 				item = m->vname;
 			indent(ip->forloop_body->exec_count);
@@ -771,7 +772,7 @@ cleanup:
 						item, op2str(Op_in_array), array);
 			indent_in();
 			pp_free(t1);
-			pprint(ip->forloop_body->nexti, pc->target_break, FALSE);
+			pprint(ip->forloop_body->nexti, pc->target_break, false);
 			indent_out();
 			indent(SPACEOVER);
 			fprintf(prof_fp, "}\n");			
@@ -782,11 +783,11 @@ cleanup:
 		case Op_K_switch:
 			ip = pc + 1;
 			fprintf(prof_fp, "%s (", op2str(pc->opcode));
-			pprint(pc->nexti, ip->switch_start, FALSE);
+			pprint(pc->nexti, ip->switch_start, false);
 			t1 = pp_pop();
 			fprintf(prof_fp, "%s) {\n", t1->pp_str);
 			pp_free(t1);
-			pprint(ip->switch_start, ip->switch_end, FALSE);
+			pprint(ip->switch_start, ip->switch_end, false);
 			indent(SPACEOVER);
 			fprintf(prof_fp, "}\n");
 			pc = pc->target_break;
@@ -802,13 +803,13 @@ cleanup:
 			} else
 				fprintf(prof_fp, "%s:\n", op2str(pc->opcode));
 			indent_in();
-			pprint(pc->stmt_start->nexti, pc->stmt_end->nexti, FALSE);
+			pprint(pc->stmt_start->nexti, pc->stmt_end->nexti, false);
 			indent_out();
 			break;
 
 		case Op_K_if:
 			fprintf(prof_fp, "%s (", op2str(pc->opcode));
-			pprint(pc->nexti, pc->branch_if, FALSE);
+			pprint(pc->nexti, pc->branch_if, false);
 			t1 = pp_pop();
 			fprintf(prof_fp, "%s) {", t1->pp_str);
 			pp_free(t1);
@@ -818,7 +819,7 @@ cleanup:
 				fprintf(prof_fp, " # %ld", ip->exec_count);
 			fprintf(prof_fp, "\n");
 			indent_in();
-			pprint(ip->nexti, pc->branch_else, FALSE);
+			pprint(ip->nexti, pc->branch_else, false);
 			indent_out();
 			pc = pc->branch_else;
 			if (pc->nexti->opcode == Op_no_op) {
@@ -830,7 +831,7 @@ cleanup:
 		case Op_K_else:
 			fprintf(prof_fp, "} %s {\n", op2str(pc->opcode));
 			indent_in();
-			pprint(pc->nexti, pc->branch_end, FALSE);
+			pprint(pc->nexti, pc->branch_end, false);
 			indent_out();
 			indent(SPACEOVER);
 			fprintf(prof_fp, "}\n");
@@ -842,14 +843,14 @@ cleanup:
 			NODE *f, *t, *cond;
 			size_t len;
 
-			pprint(pc->nexti, pc->branch_if, FALSE);
+			pprint(pc->nexti, pc->branch_if, false);
 			ip = pc->branch_if;
-			pprint(ip->nexti, pc->branch_else, FALSE);
+			pprint(ip->nexti, pc->branch_else, false);
 			ip = pc->branch_else->nexti;
 
 			pc = ip->nexti;
 			assert(pc->opcode == Op_cond_exp);
-			pprint(pc->nexti, pc->branch_end, FALSE);	
+			pprint(pc->nexti, pc->branch_end, false);	
 
 			f = pp_pop();
 			t = pp_pop();
@@ -890,7 +891,7 @@ cleanup:
 
 void
 pp_string_fp(Func_print print_func, FILE *fp, const char *in_str,
-		size_t len, int delim, int breaklines)
+		size_t len, int delim, bool breaklines)
 {
 	char *s = pp_string(in_str, len, delim);
 	int count;
@@ -909,7 +910,7 @@ pp_string_fp(Func_print print_func, FILE *fp, const char *in_str,
 	efree(s);
 }
 
-#ifdef PROFILING
+
 /* just_dump --- dump the profile and function stack and keep going */
 
 static RETSIGTYPE
@@ -930,10 +931,29 @@ static RETSIGTYPE
 dump_and_exit(int signum)
 {
 	just_dump(signum);
-	exit(EXIT_FAILURE);
+	final_exit(EXIT_FAILURE);
 }
 
-#endif
+/* print_lib_list --- print a list of all libraries loaded */
+
+static void
+print_lib_list(FILE *prof_fp)
+{
+	SRCFILE *s;
+	static bool printed_header = false;
+
+	for (s = srcfiles->next; s != srcfiles; s = s->next) {
+		if (s->stype == SRC_EXTLIB) {
+			if (! printed_header) {
+				printed_header = true;
+				fprintf(prof_fp, _("\t# Loaded extensions (-l and/or @load)\n\n"));
+			}
+			fprintf(prof_fp, "\t@load \"%s\"\n", s->src);
+		}
+	}
+	if (printed_header)	/* we found some */
+		fprintf(prof_fp, "\n");
+}
 
 /* dump_prog --- dump the program */
 
@@ -950,7 +970,8 @@ dump_prog(INSTRUCTION *code)
 	(void) time(& now);
 	/* \n on purpose, with \n in ctime() output */
 	fprintf(prof_fp, _("\t# gawk profile, created %s\n"), ctime(& now));
-	pprint(code, NULL, FALSE);
+	print_lib_list(prof_fp);
+	pprint(code, NULL, false);
 }
 
 /* prec_level --- return the precedence of an operator, for paren tests */
@@ -1023,8 +1044,6 @@ prec_level(int type)
 		return 6;
 
 	case Op_less:
-		return 5;
-
 	case Op_in_array:
 		return 5;
 
@@ -1051,7 +1070,40 @@ prec_level(int type)
 	}
 }
 
-static int
+/* is_scalar --- return true if scalar, false otherwise */
+
+static bool
+is_scalar(int type)
+{
+	switch (type) {
+	case Op_push_lhs:
+	case Op_push_param:
+	case Op_push_array:
+	case Op_push:
+	case Op_push_i:
+	case Op_push_re:
+	case Op_subscript:
+	case Op_subscript_lhs:
+	case Op_func_call:
+	case Op_builtin:
+	case Op_field_spec:
+	case Op_field_spec_lhs:
+	case Op_preincrement:
+	case Op_predecrement:
+	case Op_postincrement:
+	case Op_postdecrement:
+	case Op_unary_minus:
+	case Op_not:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+/* is_binary --- return true if type represents a binary operator */
+
+static bool
 is_binary(int type)
 {
 	switch (type) {
@@ -1090,14 +1142,14 @@ is_binary(int type)
 	case Op_in_array:
 	case Op_K_getline_redir:	/* sometimes */
 	case Op_K_getline:
-		return TRUE;
+		return true;
 
 	default:
-		return FALSE;
+		return false;
 	}
 }
 
-/* parenthesize --- parenthesize an expression in stack */
+/* pp_parenthesize --- parenthesize an expression in stack */
 
 static void
 pp_parenthesize(NODE *sp)
@@ -1117,6 +1169,8 @@ pp_parenthesize(NODE *sp)
 	sp->flags |= CAN_FREE;
 }
 
+/* parenthesize --- parenthesize two nodes relative to parent node type */
+
 static void
 parenthesize(int type, NODE *left, NODE *right)
 {
@@ -1124,15 +1178,10 @@ parenthesize(int type, NODE *left, NODE *right)
 	int lprec = prec_level(left->type);
 	int prec = prec_level(type);
 
-	if (prec > lprec) {
-		if (is_binary(left->type))		/* (a - b) * c */
-			pp_parenthesize(left);
-		if (prec >= rprec && is_binary(right->type))	/* (a - b) * (c - d) */
-			pp_parenthesize(right);
-	} else {
-		if (prec >= rprec && is_binary(right->type)) /* a - b - (c - d) */
-			pp_parenthesize(right);
-	}
+	if (lprec < prec)
+		pp_parenthesize(left);
+	if (rprec < prec)
+		pp_parenthesize(right);
 }
 
 /* pp_string --- pretty format a string or regex constant */
@@ -1169,7 +1218,7 @@ pp_string(const char *in_str, size_t len, int delim)
 		obufout = obuf + olen; \
 		ofre += osiz; \
 		osiz *= 2; \
-} ofre -= (l)
+	} ofre -= (l)
 
 	osiz = len + 3 + 2; 	/* initial size; 3 for delim + terminating null */
 	emalloc(obuf, char *, osiz, "pp_string");
@@ -1182,6 +1231,13 @@ pp_string(const char *in_str, size_t len, int delim)
 		if (delim != '/' && *str == delim) {
 			*obufout++ = '\\';
 			*obufout++ = delim;
+		} else if (*str == '\0') {
+			chksize(4);
+
+			*obufout++ = '\\';
+			*obufout++ = '0';
+			*obufout++ = '0';
+			*obufout++ = '0';
 		} else if ((cp = strchr(escapes, *str)) != NULL) {
 			i = cp - escapes;
 			*obufout++ = '\\';
@@ -1201,7 +1257,7 @@ pp_string(const char *in_str, size_t len, int delim)
 			obufout += len;
 		}
 	}
-	chksize(1);
+	chksize(2);
 	*obufout++ = delim;
 	*obufout = '\0';
 	return obuf;
@@ -1211,13 +1267,20 @@ pp_string(const char *in_str, size_t len, int delim)
 /* pp_number --- pretty format a number */
 
 char *
-pp_number(AWKNUM d)
+pp_number(NODE *n)
 {
 #define PP_PRECISION 6
 	char *str;
 
 	emalloc(str, char *, PP_PRECISION + 10, "pp_number");
-	sprintf(str, "%0.*g", PP_PRECISION, d);
+#ifdef HAVE_MPFR
+	if (is_mpg_float(n))
+		mpfr_sprintf(str, "%0.*R*g", PP_PRECISION, ROUND_MODE, n->mpg_numbr);
+	else if (is_mpg_integer(n))
+		mpfr_sprintf(str, "%Zd", n->mpg_i);
+	else
+#endif
+	sprintf(str, "%0.*g", PP_PRECISION, n->numbr);
 	return str;
 #undef PP_PRECISION
 }
@@ -1228,9 +1291,11 @@ char *
 pp_node(NODE *n)
 {
 	if ((n->flags & NUMBER) != 0)
-		return pp_number(n->numbr);
+		return pp_number(n);
 	return pp_string(n->stptr, n->stlen, '"');
 }
+
+/* pp_list --- pretty print a list, with surrounding characters and separator */
 
 static NODE **pp_args = NULL;
 static int npp_args;
@@ -1287,8 +1352,88 @@ pp_list(int nargs, const char *paren, const char *delim)
 	return str;					
 }
 
+/* pp_concat --- handle concatenation and correct parenthesizing of expressions */
+
 static char *
-pp_concat(const char *s1, const char *s2, const char *s3)
+pp_concat(int nargs)
+{
+	NODE *r;
+ 	char *str, *s;
+	size_t len;
+	static const size_t delimlen = 1;	/* " " */
+	int i;
+	int pl_l, pl_r;
+
+	if (pp_args == NULL) {
+		npp_args = nargs;
+		emalloc(pp_args, NODE **, (nargs + 2) * sizeof(NODE *), "pp_concat");
+	} else if (nargs > npp_args) {
+		npp_args = nargs;
+		erealloc(pp_args, NODE **, (nargs + 2) * sizeof(NODE *), "pp_concat");
+	}
+
+	/*
+	 * items are on the stack in reverse order that they
+	 * will be printed to pop them off backwards.
+	 */
+
+	len = -delimlen;
+	for (i = nargs; i >= 1; i--) {
+		r = pp_args[i] = pp_pop();
+		len += r->pp_len + delimlen + 2;
+	}
+
+	emalloc(str, char *, len + 1, "pp_concat");
+	s = str;
+
+	/* now copy in */
+	for (i = 1; i < nargs; i++) {
+		r = pp_args[i];
+
+		pl_l = prec_level(pp_args[i]->type);
+		pl_r = prec_level(pp_args[i+1]->type);
+
+		if (is_scalar(pp_args[i]->type) && is_scalar(pp_args[i+1]->type)) {
+			memcpy(s, r->pp_str, r->pp_len);
+			s += r->pp_len;
+		} else if (pl_l <= pl_r || is_scalar(pp_args[i+1]->type)) {
+			*s++ = '(';
+			memcpy(s, r->pp_str, r->pp_len);
+			s += r->pp_len;
+			*s++ = ')';
+		} else {
+			memcpy(s, r->pp_str, r->pp_len);
+			s += r->pp_len;
+		}
+		pp_free(r);
+
+		if (i < nargs) {
+			*s++ = ' ';
+		}
+	}
+	
+	pl_l = prec_level(pp_args[nargs-1]->type);
+	pl_r = prec_level(pp_args[nargs]->type);
+	r = pp_args[nargs];
+	if (pl_l >= pl_r && ! is_scalar(pp_args[nargs]->type)) {
+		*s++ = '(';
+		memcpy(s, r->pp_str, r->pp_len);
+		s += r->pp_len;
+		*s++ = ')';
+	} else {
+		memcpy(s, r->pp_str, r->pp_len);
+		s += r->pp_len;
+	}
+	pp_free(r);
+
+	*s = '\0';
+	return str;					
+}
+
+/* pp_group3 --- string together up to 3 strings */
+
+static char *
+pp_group3(const char *s1, const char *s2, const char *s3)
 {
 	size_t len1, len2, len3, l;
 	char *str, *s;
@@ -1297,7 +1442,7 @@ pp_concat(const char *s1, const char *s2, const char *s3)
 	len2 = strlen(s2);
 	len3 = strlen(s3);
 	l = len1 + len2 + len3 + 2;
-	emalloc(str, char *, l, "pp_concat");
+	emalloc(str, char *, l, "pp_group3");
 	s = str;
 	if (len1 > 0) {
 		memcpy(s, s1, len1);
@@ -1321,31 +1466,29 @@ int
 pp_func(INSTRUCTION *pc, void *data ATTRIBUTE_UNUSED)
 {
 	int j;
-	char **pnames;
-	NODE *f;
-	static int first = TRUE;
+	static bool first = true;
+	NODE *func;
 	int pcount;
 
 	if (first) {
-		first = FALSE;
+		first = false;
 		fprintf(prof_fp, _("\n\t# Functions, listed alphabetically\n"));
 	}
 
-	f = pc->func_body;
+	func = pc->func_body;
 	fprintf(prof_fp, "\n");
 	indent(pc->nexti->exec_count);
-	fprintf(prof_fp, "%s %s(", op2str(Op_K_function), f->lnode->param);
-	pnames = f->parmlist;
-	fparms = pnames;
-	pcount = f->lnode->param_cnt;
+	fprintf(prof_fp, "%s %s(", op2str(Op_K_function), func->vname);
+	pcount = func->param_cnt;
+	func_params = func->fparms;
 	for (j = 0; j < pcount; j++) {
-		fprintf(prof_fp, "%s", pnames[j]);
+		fprintf(prof_fp, "%s", func_params[j].param);
 		if (j < pcount - 1)
 			fprintf(prof_fp, ", ");
 	}
 	fprintf(prof_fp, ")\n\t{\n");
 	indent_in();
-	pprint(pc->nexti->nexti, NULL, FALSE);	/* function body */
+	pprint(pc->nexti->nexti, NULL, false);	/* function body */
 	indent_out();
 	fprintf(prof_fp, "\t}\n");
 	return 0;
@@ -1370,5 +1513,3 @@ redir2str(int redirtype)
 		fatal(_("redir2str: unknown redirection type %d"), redirtype);
 	return redirtab[redirtype];
 }
-
-	
