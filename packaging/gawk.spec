@@ -3,13 +3,13 @@ Url:            http://www.gnu.org/software/gawk/
 Provides:       awk
 BuildRequires:  automake
 BuildRequires:  makeinfo
-Version:        4.0.1
+Version:        4.1.1
 Release:        0
 Summary:        GNU awk
 License:        GPL-3.0+
 Group:          Base/Utilities
 Source:         gawk-%{version}.tar.bz2
-Source1001: 	gawk.manifest
+Source1001:     gawk.manifest
 
 # Temporary
 Provides:       /bin/awk
@@ -39,27 +39,25 @@ Package contains igawk utility which allows to include source files in
 AWK programs. Several reusable AWK scripts and their dependencies are
 also included.
 
+
 %prep
 %setup -q
 cp %{SOURCE1001} .
-chmod -x COPYING
-# force rebuild with non-broken makeinfo
-rm -f doc/*.info
 
 %build
 AUTOPOINT=true autoreconf --force --install
 %configure --libexecdir=%{_libdir} --disable-nls
 %if %do_profiling
-  make %{?_smp_mflags} CFLAGS="$RPM_OPT_FLAGS %cflags_profile_generate"
-  make check
-  make clean
-  make %{?_smp_mflags} CFLAGS="$RPM_OPT_FLAGS %cflags_profile_feedback"
+  %__make %{?_smp_mflags} CFLAGS="$RPM_OPT_FLAGS %cflags_profile_generate"
+  %__make check
+  %__make clean
+  %__make %{?_smp_mflags} CFLAGS="$RPM_OPT_FLAGS %cflags_profile_feedback"
 %else
-  make %{?_smp_mflags}
+  %__make %{?_smp_mflags}
 %endif
 
 %check
-make check
+%__make check
 
 %install
 %make_install
@@ -73,15 +71,14 @@ make check
 %license COPYING
 %{_bindir}/awk
 %{_bindir}/gawk*
+%{_libdir}/gawk/*.so
 
 %files devel
 %defattr(-,root,root)
-%{_bindir}/dgawk
-%{_bindir}/pgawk*
+%{_includedir}/gawkapi.h
 
 %files extras
 %defattr(-,root,root)
 %{_bindir}/igawk
 %{_libdir}/awk
-/usr/share/awk
-
+%{_datadir}/awk
