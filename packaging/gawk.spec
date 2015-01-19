@@ -47,7 +47,7 @@ cp %{SOURCE1001} .
 %build
 AUTOPOINT=true autoreconf --force --install
 %configure --libexecdir=%{_libdir} --disable-nls
-%if %do_profiling
+%if 0%{?do_profiling:1}
   %__make %{?_smp_mflags} CFLAGS="$RPM_OPT_FLAGS %cflags_profile_generate"
   %__make check
   %__make clean
