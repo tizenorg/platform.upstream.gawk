@@ -1,7 +1,7 @@
 Name:           gawk
 Url:            http://www.gnu.org/software/gawk/
 Provides:       awk
-BuildRequires:  automake
+BuildRequires:  automake >= 1.13
 BuildRequires:  makeinfo
 Version:        4.1.1
 Release:        0
@@ -65,7 +65,7 @@ AUTOPOINT=true autoreconf --force --install
 
 %docs_package
 
-%files 
+%files
 %manifest %{name}.manifest
 %defattr(-,root,root)
 %license COPYING
